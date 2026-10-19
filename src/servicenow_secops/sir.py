@@ -1,0 +1,121 @@
+"""Lookups shared by the SIR tools: incident resolution, choice lists, and tags."""
+
+import re
+from typing import Any
+
+from arcade_mcp_server import Context
+from arcade_mcp_server.exceptions import RetryableToolError, ToolExecutionError
+
+from servicenow_secops.client import result_of, servicenow_request
+from servicenow_secops.constants import (
+    CHOICE_FALLBACK_TABLE,
+    SECURITY_TAG_TABLE,
+    SIR_TABLE,
+    SIR_TAG_M2M_RECORD_FIELD,
+    SIR_TAG_M2M_TABLE,
+    SIR_TAG_M2M_TAG_FIELD,
+)
+
+_SYS_ID = re.compile(r"^[0-9a-f]{32}$")
+
+
+async def resolve_sir_sys_id(context: Context, incident: str) -> str:
+    """Accept a SIR number (e.g. 'SIR0010001') or a 32-character sys_id."""
+    incident = incident.strip()
+    if _SYS_ID.match(incident.lower()):
+        return incident.lower()
+
+    response = await servicenow_request(
+        context,
+        "GET",
+        f"/api/now/table/{SIR_TABLE}",
+        params={
+            "sysparm_query": f"number={incident.upper()}",
+            "sysparm_fields": "sys_id",
+            "sysparm_limit": 1,
+        },
+    )
+    rows = result_of(response) or []
+    if not rows:
+        raise ToolExecutionError(
+            message=f"Security incident '{incident}' was not found.",
+            developer_message=f"No {SIR_TABLE} row with number={incident.upper()}.",
+        )
+    return rows[0]["sys_id"]
+
+
+async def list_choices(
+    context: Context, element: str, dependent_value: str | None = None
+) -> list[dict[str, str]]:
+    """Active choices for a SIR field, falling back to the task table's choice list."""
+    for table in (SIR_TABLE, CHOICE_FALLBACK_TABLE):
+        query = f"name={table}^element={element}^inactive=false"
+        if dependent_value is not None:
+            query += f"^dependent_value={dependent_value}"
+        response = await servicenow_request(
+            context,
+            "GET",
+            "/api/now/table/sys_choice",
+            params={
+                "sysparm_query": f"{query}^ORDERBYsequence",
+                "sysparm_fields": "label,value,dependent_value",
+                "sysparm_limit": 500,
+            },
+        )
+        rows = result_of(response) or []
+        if rows:
+            return [
+                {
+                    "label": row["label"],
+                    "value": row["value"],
+                    "depends_on": row.get("dependent_value") or "",
+                }
+                for row in rows
+            ]
+    return []
+
+
+def match_choice(field: str, given: str, choices: list[dict[str, str]]) -> str:
+    """Map a caller-supplied label or value to the stored value, or explain the valid options."""
+    wanted = given.strip().lower()
+    for choice in choices:
+        if wanted in (choice["value"].lower(), choice["label"].lower()):
+            return choice["value"]
+    valid = ", ".join(f"{c['label']} ({c['value']})" for c in choices) or "none found"
+    raise RetryableToolError(
+        message=f"'{given}' is not a valid {field}.",
+        developer_message=f"No active sys_choice for {SIR_TABLE}.{field} matched {given!r}.",
+        additional_prompt_content=f"Valid values for {field}: {valid}.",
+    )
+
+
+async def list_security_tags(context: Context) -> list[dict[str, str]]:
+    # TODO: confirm the tag table and whether it carries an 'active' flag.
+    response = await servicenow_request(
+        context,
+        "GET",
+        f"/api/now/table/{SECURITY_TAG_TABLE}",
+        params={"sysparm_fields": "sys_id,name", "sysparm_limit": 1000},
+    )
+    return [{"sys_id": row["sys_id"], "name": row["name"]} for row in result_of(response) or []]
+
+
+async def tags_on_incident(context: Context, sir_sys_id: str) -> list[dict[str, Any]]:
+    response = await servicenow_request(
+        context,
+        "GET",
+        f"/api/now/table/{SIR_TAG_M2M_TABLE}",
+        params={
+            "sysparm_query": f"{SIR_TAG_M2M_RECORD_FIELD}={sir_sys_id}",
+            "sysparm_fields": f"sys_id,{SIR_TAG_M2M_TAG_FIELD}",
+            "sysparm_display_value": "all",
+            "sysparm_limit": 200,
+        },
+    )
+    return [
+        {
+            "tag_sys_id": row[SIR_TAG_M2M_TAG_FIELD]["value"],
+            "name": row[SIR_TAG_M2M_TAG_FIELD]["display_value"],
+        }
+        for row in result_of(response) or []
+    ]
