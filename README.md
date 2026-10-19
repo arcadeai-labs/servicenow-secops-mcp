@@ -4,6 +4,8 @@ An [Arcade](https://docs.arcade.dev/en/home) MCP server for **ServiceNow Securit
 
 It runs as a **dedicated ServiceNow service account**, not as whichever person signed in.
 
+> This is an [Arcade Labs](https://github.com/arcadeai-labs) project: shared as-is, without support or an SLA.
+
 > **Status: scaffold.** The tools run against a mocked ServiceNow but have not been tested against a live SIR instance. Several table and field names are unverified; see [Verify the SIR schema](#verify-the-sir-schema-before-first-use).
 
 ## Contents
