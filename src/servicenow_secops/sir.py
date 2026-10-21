@@ -8,12 +8,13 @@ from arcade_mcp_server.exceptions import RetryableToolError, ToolExecutionError
 
 from servicenow_secops.client import result_of, servicenow_request
 from servicenow_secops.constants import (
-    CHOICE_FALLBACK_TABLE,
+    APPLIED_TAG_RECORD_ID_FIELD,
+    APPLIED_TAG_RECORD_TABLE_FIELD,
+    APPLIED_TAG_TABLE,
+    APPLIED_TAG_TAG_FIELD,
+    CHOICE_FALLBACK_TABLES,
     SECURITY_TAG_TABLE,
     SIR_TABLE,
-    SIR_TAG_M2M_RECORD_FIELD,
-    SIR_TAG_M2M_TABLE,
-    SIR_TAG_M2M_TAG_FIELD,
 )
 
 _SYS_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -47,8 +48,8 @@ async def resolve_sir_sys_id(context: Context, incident: str) -> str:
 async def list_choices(
     context: Context, element: str, dependent_value: str | None = None
 ) -> list[dict[str, str]]:
-    """Active choices for a SIR field, falling back to the task table's choice list."""
-    for table in (SIR_TABLE, CHOICE_FALLBACK_TABLE):
+    """Active choices for a SIR field, falling back to its parent tables' choice lists."""
+    for table in (SIR_TABLE, *CHOICE_FALLBACK_TABLES):
         query = f"name={table}^element={element}^inactive=false"
         if dependent_value is not None:
             query += f"^dependent_value={dependent_value}"
@@ -90,7 +91,6 @@ def match_choice(field: str, given: str, choices: list[dict[str, str]]) -> str:
 
 
 async def list_security_tags(context: Context) -> list[dict[str, str]]:
-    # TODO: confirm the tag table and whether it carries an 'active' flag.
     response = await servicenow_request(
         context,
         "GET",
@@ -104,18 +104,21 @@ async def tags_on_incident(context: Context, sir_sys_id: str) -> list[dict[str, 
     response = await servicenow_request(
         context,
         "GET",
-        f"/api/now/table/{SIR_TAG_M2M_TABLE}",
+        f"/api/now/table/{APPLIED_TAG_TABLE}",
         params={
-            "sysparm_query": f"{SIR_TAG_M2M_RECORD_FIELD}={sir_sys_id}",
-            "sysparm_fields": f"sys_id,{SIR_TAG_M2M_TAG_FIELD}",
+            "sysparm_query": (
+                f"{APPLIED_TAG_RECORD_TABLE_FIELD}={SIR_TABLE}"
+                f"^{APPLIED_TAG_RECORD_ID_FIELD}={sir_sys_id}"
+            ),
+            "sysparm_fields": f"sys_id,{APPLIED_TAG_TAG_FIELD}",
             "sysparm_display_value": "all",
             "sysparm_limit": 200,
         },
     )
     return [
         {
-            "tag_sys_id": row[SIR_TAG_M2M_TAG_FIELD]["value"],
-            "name": row[SIR_TAG_M2M_TAG_FIELD]["display_value"],
+            "tag_sys_id": row[APPLIED_TAG_TAG_FIELD]["value"],
+            "name": row[APPLIED_TAG_TAG_FIELD]["display_value"],
         }
         for row in result_of(response) or []
     ]

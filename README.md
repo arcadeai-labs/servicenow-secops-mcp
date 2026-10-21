@@ -6,7 +6,7 @@ It runs as a **dedicated ServiceNow service account**, not as whichever person s
 
 > This is an [Arcade Labs](https://github.com/arcadeai-labs) project: shared as-is, without support or an SLA.
 
-> **Status: scaffold.** The tools run against a mocked ServiceNow but have not been tested against a live SIR instance. Several table and field names are unverified; see [Verify the SIR schema](#verify-the-sir-schema-before-first-use).
+> **Status: early.** The schema has been checked against Security Incident Response 14.4.4 with demo data on a Brazil-release instance, but the tools have not yet been run end to end against a live instance. See [SIR schema](#sir-schema).
 
 ## Contents
 
@@ -15,7 +15,7 @@ It runs as a **dedicated ServiceNow service account**, not as whichever person s
 - [Set up ServiceNow](#set-up-servicenow)
 - [Run locally](#run-locally)
 - [Deploy to Arcade](#deploy-to-arcade)
-- [Verify the SIR schema before first use](#verify-the-sir-schema-before-first-use)
+- [SIR schema](#sir-schema)
 - [Project layout](#project-layout)
 - [Development](#development)
 - [Arcade documentation](#arcade-documentation)
@@ -112,25 +112,26 @@ Requirements: Python 3.10+ and [uv](https://docs.astral.sh/uv/).
 
 3. **Expose the tools** through an [MCP Gateway](https://docs.arcade.dev/en/operate/governance/mcp-gateways/create-via-dashboard), together with the ServiceNow toolkit if the agent needs both.
 
-## Verify the SIR schema before first use
+## SIR schema
 
-SIR table and field names vary between plugin versions. The names below are in [`constants.py`](src/servicenow_secops/constants.py) and are marked `UNVERIFIED`. Confirm each one on your instance (`sys_db_object` for tables, `sys_dictionary` for fields) and update the constants if they differ.
+These names are in [`constants.py`](src/servicenow_secops/constants.py). They were checked against Security Incident Response 14.4.4 with demo data on a Brazil-release instance. SIR schemas can differ between plugin versions, so re-check them (`sys_db_object` for tables, `sys_dictionary` for fields) on older releases.
 
-| Constant | Current value | What it should be |
+| What | Where | Notes |
 |---|---|---|
-| `SECURITY_TAG_TABLE` | `sn_sec_cmn_security_tag` | Table holding security tag definitions |
-| `SIR_TAG_M2M_TABLE` | `sn_sec_cmn_m2m_security_tag` | Table linking tags to security incidents |
-| `SIR_TAG_M2M_RECORD_FIELD` | `record` | Field on the link table that references the incident |
-| `SIR_TAG_M2M_TAG_FIELD` | `security_tag` | Field on the link table that references the tag |
-| `SECURE_NOTES_FIELD` | `secure_notes` | Journal field for secure notes |
-| `UPDATABLE_CHOICE_FIELDS["business_impact"]` | `business_criticality` | Field behind "Business impact" |
-| `"company"` in `SIR_FIELDS` | `company` | Field behind "Organization" |
+| Security incidents | `sn_si_incident` | Extends `sm_order`, which extends `task` |
+| State, category, subcategory, business impact | Choice lists on `sn_si_incident` | Subcategories depend on the category's stored value. States include Analysis (16), Contain (18), Eradicate (19) and Recover (20) |
+| Business impact | `business_criticality` | Integer: 1 Critical, 2 High, 3 Non-critical |
+| Organization | `company` | Reference to `core_company`, inherited from `task` |
+| Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends |
+| Security tags | `sn_sec_cmn_security_tag` | Tag definitions |
+| Tags applied to an incident | `sn_sec_cmn_applied_security_tag` | Points at the incident with `record_table` and `record_id`, and at the tag with `security_tag` |
 
 ### Known gaps
 
-- Organization is read but cannot be set yet, because it is a reference field.
-- When only `subcategory` is passed to `UpdateSecurityIncident`, it is not checked against the incident's current category.
-- No automated tests or [evals](https://docs.arcade.dev/en/build/create-tools/evaluate-tools) yet.
+- **Secure notes need the right role.** The field is encrypted, so the service account needs the role SIR uses for secure notes. Without it the field reads back empty, and appending would overwrite existing notes. Not yet tested with a real service account.
+- **Two places hold tags.** `sn_si_incident` also has a `security_tags` list field. The demo data mostly uses the applied-tag table, which is what these tools read and write, but confirm the SIR form shows tags added this way.
+- **Organization can't be set yet**, because it is a reference field.
+- **No automated tests or [evals](https://docs.arcade.dev/en/build/create-tools/evaluate-tools) yet.**
 
 ## Project layout
 
@@ -141,7 +142,7 @@ src/servicenow_secops/
 ├── sir.py         # Incident lookup, choice lists, and tag helpers
 ├── client.py      # ServiceNow REST calls and error mapping
 ├── auth.py        # Client-credentials token minting and caching
-└── constants.py   # Table and field names (see "Verify the SIR schema")
+└── constants.py   # Table and field names (see "SIR schema")
 ```
 
 ## Development

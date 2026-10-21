@@ -15,13 +15,14 @@ from arcade_mcp_server.metadata import (
 from servicenow_secops.auth import SERVICE_ACCOUNT_SECRETS
 from servicenow_secops.client import result_of, servicenow_request
 from servicenow_secops.constants import (
+    APPLIED_TAG_RECORD_ID_FIELD,
+    APPLIED_TAG_RECORD_TABLE_FIELD,
+    APPLIED_TAG_TABLE,
+    APPLIED_TAG_TAG_FIELD,
     SECURE_NOTES_FIELD,
     SECURITY_TAG_PSEUDO_FIELD,
     SIR_FIELDS,
     SIR_TABLE,
-    SIR_TAG_M2M_RECORD_FIELD,
-    SIR_TAG_M2M_TABLE,
-    SIR_TAG_M2M_TAG_FIELD,
     UPDATABLE_CHOICE_FIELDS,
 )
 from servicenow_secops.sir import (
@@ -130,7 +131,7 @@ async def list_security_incident_field_choices(
             operations=[Operation.UPDATE],
             read_only=False,
             destructive=False,
-            idempotent=False,  # a secure note appends a new journal entry on every call
+            idempotent=False,  # a secure note is appended to the existing notes on every call
             open_world=True,
         ),
     ),
@@ -145,12 +146,14 @@ async def update_security_incident(
     ] = None,
     business_impact: Annotated[str | None, "Business impact, by label or value"] = None,
     secure_note: Annotated[
-        str | None, "Text to add as a secure note, visible only to authorized responders"
+        str | None,
+        "Text to append to the incident's secure notes, visible only to authorized responders",
     ] = None,
 ) -> Annotated[dict, "The fields that were changed, with their new values"]:
     """Set a security incident's classification and state, and optionally add a secure note.
 
     Values are checked against the instance's choice lists before anything is written.
+    A secure note is appended below any existing secure notes rather than replacing them.
     """
     requested = {
         "state": state,
@@ -163,21 +166,37 @@ async def update_security_incident(
 
     sys_id = await resolve_sir_sys_id(context, incident)
 
+    # Read what the update depends on: the current category, to validate a
+    # subcategory passed on its own, and the current secure notes, because the
+    # field is a single encrypted value and writing it replaces the whole thing.
+    current: dict[str, Any] = {}
+    needs_category = subcategory is not None and category is None
+    if needs_category or secure_note:
+        response = await servicenow_request(
+            context,
+            "GET",
+            f"/api/now/table/{SIR_TABLE}/{sys_id}",
+            params={"sysparm_fields": f"category,{SECURE_NOTES_FIELD}"},
+        )
+        current = result_of(response) or {}
+
     payload: dict[str, str] = {}
     for arg, given in requested.items():
         if given is None:
             continue
         element = UPDATABLE_CHOICE_FIELDS[arg]
-        # Subcategories depend on the category, so validate them against the new
-        # category when one is being set in the same call.
-        # TODO: when only subcategory is passed, read the incident's current category.
-        dependent = payload.get("category") if arg == "subcategory" else None
+        # Subcategories depend on the category: the one being set in this call,
+        # otherwise the incident's current one.
+        dependent = (
+            payload.get("category", current.get("category")) if arg == "subcategory" else None
+        )
         payload[element] = match_choice(arg, given, await list_choices(context, element, dependent))
 
     if secure_note:
-        payload[SECURE_NOTES_FIELD] = secure_note
+        existing = current.get(SECURE_NOTES_FIELD) or ""
+        payload[SECURE_NOTES_FIELD] = f"{existing}\n\n{secure_note}" if existing else secure_note
 
-    # TODO: setting organization (a reference field) is not supported yet.
+    # TODO: setting company (a reference to core_company) is not supported yet.
     response = await servicenow_request(
         context,
         "PATCH",
@@ -228,10 +247,11 @@ async def add_security_tag(
     await servicenow_request(
         context,
         "POST",
-        f"/api/now/table/{SIR_TAG_M2M_TABLE}",
+        f"/api/now/table/{APPLIED_TAG_TABLE}",
         json_body={
-            SIR_TAG_M2M_RECORD_FIELD: sys_id,
-            SIR_TAG_M2M_TAG_FIELD: wanted["sys_id"],
+            APPLIED_TAG_RECORD_TABLE_FIELD: SIR_TABLE,
+            APPLIED_TAG_RECORD_ID_FIELD: sys_id,
+            APPLIED_TAG_TAG_FIELD: wanted["sys_id"],
         },
     )
     return {
