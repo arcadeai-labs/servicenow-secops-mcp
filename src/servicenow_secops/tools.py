@@ -26,6 +26,7 @@ from servicenow_secops.constants import (
     UPDATABLE_CHOICE_FIELDS,
 )
 from servicenow_secops.sir import (
+    OBSERVED,
     list_choices,
     list_security_tags,
     match_choice,
@@ -120,7 +121,14 @@ async def list_security_incident_field_choices(
 
     element = UPDATABLE_CHOICE_FIELDS[field]
     dependent = category if field == "subcategory" else None
-    return {"field": field, "choices": await list_choices(context, element, dependent)}
+    choices, source = await list_choices(context, element, dependent)
+    result: dict[str, Any] = {"field": field, "source": source, "choices": choices}
+    if source == OBSERVED:
+        result["note"] = (
+            "The service account can't read the instance's choice lists, so these are the "
+            "values existing incidents use. The instance may define others."
+        )
+    return result
 
 
 @tool(
@@ -190,7 +198,8 @@ async def update_security_incident(
         dependent = (
             payload.get("category", current.get("category")) if arg == "subcategory" else None
         )
-        payload[element] = match_choice(arg, given, await list_choices(context, element, dependent))
+        choices, source = await list_choices(context, element, dependent)
+        payload[element] = match_choice(arg, given, choices, source)
 
     if secure_note:
         existing = current.get(SECURE_NOTES_FIELD) or ""
@@ -244,16 +253,31 @@ async def add_security_tag(
     if any(t["tag_sys_id"] == wanted["sys_id"] for t in current):
         return {"sys_id": sys_id, "added": False, "security_tags": current}
 
-    await servicenow_request(
-        context,
-        "POST",
-        f"/api/now/table/{APPLIED_TAG_TABLE}",
-        json_body={
-            APPLIED_TAG_RECORD_TABLE_FIELD: SIR_TABLE,
-            APPLIED_TAG_RECORD_ID_FIELD: sys_id,
-            APPLIED_TAG_TAG_FIELD: wanted["sys_id"],
-        },
-    )
+    # SIR's applied-tag table only accepts inserts from server-side code (its create
+    # ACL is "nobody"); the UI applies tags through sn_sec_cmn.SecurityTagUtil. On
+    # such instances this insert is refused, and no role changes that.
+    try:
+        await servicenow_request(
+            context,
+            "POST",
+            f"/api/now/table/{APPLIED_TAG_TABLE}",
+            json_body={
+                APPLIED_TAG_RECORD_TABLE_FIELD: SIR_TABLE,
+                APPLIED_TAG_RECORD_ID_FIELD: sys_id,
+                APPLIED_TAG_TAG_FIELD: wanted["sys_id"],
+            },
+        )
+    except ToolExecutionError as error:
+        raise ToolExecutionError(
+            message=(
+                "This ServiceNow instance doesn't allow security tags to be applied through "
+                "its REST API, so the tag was not added. Add it in ServiceNow instead."
+            ),
+            developer_message=(
+                f"Insert into {APPLIED_TAG_TABLE} was refused ({error.message}). SIR restricts "
+                "that table to server-side code; see the README's Known gaps."
+            ),
+        ) from error
     return {
         "sys_id": sys_id,
         "added": True,

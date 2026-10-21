@@ -6,7 +6,7 @@ It runs as a **dedicated ServiceNow service account**, not as whichever person s
 
 > This is an [Arcade Labs](https://github.com/arcadeai-labs) project: shared as-is, without support or an SLA.
 
-> **Status: early.** The schema has been checked against Security Incident Response 14.4.4 with demo data on a Brazil-release instance, but the tools have not yet been run end to end against a live instance. See [SIR schema](#sir-schema).
+> **Status: early.** Run end to end as a service account against Security Incident Response 14.4.4 on a Brazil-release instance. `GetSecurityIncident`, `ListSecurityIncidentFieldChoices` and `UpdateSecurityIncident` work; `AddSecurityTag` does not yet. See [Known gaps](#known-gaps).
 
 ## Contents
 
@@ -53,9 +53,10 @@ The values are never in the code. Tools declare the secret *names* they need wit
 
 You need a ServiceNow admin for these steps. The exact menus depend on your ServiceNow release.
 
-1. **Create the service account.** Create a ServiceNow user for the agent and give it the Security Incident Response roles it needs to read and update security incidents, manage security tags, and read and write secure notes. Grant only what the agent needs.
-2. **Create an OAuth client for it.** In Machine Identity Console (Zurich and later) or Application Registry (earlier releases), create an OAuth API endpoint for external clients. Enable the **client credentials** grant and set the service account as its **OAuth Application User**. Client credentials requires a ServiceNow release that supports it; check your instance's documentation.
-3. **Copy the client ID and client secret.** You will store them in Arcade, not in this repository.
+1. **Create the service account.** Create a ServiceNow user for the agent, marked web-service access only, with the `sn_si.analyst` role. That role was enough to read and update security incidents and to read and append secure notes in testing.
+2. **Enable the client-credentials grant.** Set the system property `glide.oauth.inbound.client.credential.grant_type.enabled` to `true`.
+3. **Create an OAuth client for it.** In Machine Identity Console (Zurich and later) or Application Registry (earlier releases), create an OAuth client for an integration service, with **Client Credentials** as its default grant type and the service account as its **OAuth Application User**.
+4. **Copy the client ID and client secret.** You will store them in Arcade, not in this repository.
 
 ## Run locally
 
@@ -122,14 +123,14 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 | State, category, subcategory, business impact | Choice lists on `sn_si_incident` | Subcategories depend on the category's stored value. States include Analysis (16), Contain (18), Eradicate (19) and Recover (20) |
 | Business impact | `business_criticality` | Integer: 1 Critical, 2 High, 3 Non-critical |
 | Organization | `company` | Reference to `core_company`, inherited from `task` |
-| Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends |
+| Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends. Readable and writable with `sn_si.analyst` |
 | Security tags | `sn_sec_cmn_security_tag` | Tag definitions |
 | Tags applied to an incident | `sn_sec_cmn_applied_security_tag` | Points at the incident with `record_table` and `record_id`, and at the tag with `security_tag` |
 
 ### Known gaps
 
-- **Secure notes need the right role.** The field is encrypted, so the service account needs the role SIR uses for secure notes. Without it the field reads back empty, and appending would overwrite existing notes. Not yet tested with a real service account.
-- **Two places hold tags.** `sn_si_incident` also has a `security_tags` list field. The demo data mostly uses the applied-tag table, which is what these tools read and write, but confirm the SIR form shows tags added this way.
+- **`AddSecurityTag` doesn't work through the REST API.** SIR only lets server-side code insert into `sn_sec_cmn_applied_security_tag` (its create ACL is `nobody`); the ServiceNow UI applies tags through `sn_sec_cmn.SecurityTagUtil`. The incident's `security_tags` field is filled in from the applied tags, not the other way round, so writing it doesn't apply a tag either. The tool now says so plainly instead of failing with an access error. Applying tags will need a small scripted REST API on the instance.
+- **Choice lists may be the values in use, not the full list.** Reading `sys_choice` needs roles such as `personalize_choices`, which can also edit choice lists, so a least-privilege service account won't have them. The tools then fall back to the values existing incidents hold, and say so. On a fresh instance that can miss valid values: in testing, states with no incidents (Draft, Cancelled) weren't offered.
 - **Organization can't be set yet**, because it is a reference field.
 - **No automated tests or [evals](https://docs.arcade.dev/en/build/create-tools/evaluate-tools) yet.**
 

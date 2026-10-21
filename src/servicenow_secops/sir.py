@@ -45,48 +45,99 @@ async def resolve_sir_sys_id(context: Context, incident: str) -> str:
     return rows[0]["sys_id"]
 
 
+# Where a choice list came from. "configured" is the instance's full choice list
+# from sys_choice. "observed" is only the values existing incidents hold, used when
+# the account can't read sys_choice (it needs roles such as personalize_choices,
+# which can also edit choice lists, so a least-privilege account won't have them).
+CONFIGURED = "configured"
+OBSERVED = "observed"
+
+# A dependent choice field, and the field whose value it depends on.
+_DEPENDS_ON = {"subcategory": "category"}
+
+
 async def list_choices(
     context: Context, element: str, dependent_value: str | None = None
+) -> tuple[list[dict[str, str]], str]:
+    """Choices for a SIR field, and whether they're the configured list or observed values."""
+    try:
+        for table in (SIR_TABLE, *CHOICE_FALLBACK_TABLES):
+            query = f"name={table}^element={element}^inactive=false"
+            if dependent_value is not None:
+                query += f"^dependent_value={dependent_value}"
+            response = await servicenow_request(
+                context,
+                "GET",
+                "/api/now/table/sys_choice",
+                params={
+                    "sysparm_query": f"{query}^ORDERBYsequence",
+                    "sysparm_fields": "label,value,dependent_value",
+                    "sysparm_limit": 500,
+                },
+            )
+            rows = result_of(response) or []
+            if rows:
+                return [
+                    {
+                        "label": row["label"],
+                        "value": row["value"],
+                        "depends_on": row.get("dependent_value") or "",
+                    }
+                    for row in rows
+                ], CONFIGURED
+    except ToolExecutionError:
+        pass  # sys_choice isn't readable by this account; use observed values
+    return await _observed_choices(context, element, dependent_value), OBSERVED
+
+
+async def _observed_choices(
+    context: Context, element: str, dependent_value: str | None
 ) -> list[dict[str, str]]:
-    """Active choices for a SIR field, falling back to its parent tables' choice lists."""
-    for table in (SIR_TABLE, *CHOICE_FALLBACK_TABLES):
-        query = f"name={table}^element={element}^inactive=false"
-        if dependent_value is not None:
-            query += f"^dependent_value={dependent_value}"
-        response = await servicenow_request(
-            context,
-            "GET",
-            "/api/now/table/sys_choice",
-            params={
-                "sysparm_query": f"{query}^ORDERBYsequence",
-                "sysparm_fields": "label,value,dependent_value",
-                "sysparm_limit": 500,
-            },
-        )
-        rows = result_of(response) or []
-        if rows:
-            return [
-                {
-                    "label": row["label"],
-                    "value": row["value"],
-                    "depends_on": row.get("dependent_value") or "",
-                }
-                for row in rows
-            ]
-    return []
+    """Distinct values existing incidents hold for a field, via the Aggregate API."""
+    params = {
+        "sysparm_group_by": element,
+        "sysparm_count": "true",
+        "sysparm_display_value": "all",
+    }
+    parent = _DEPENDS_ON.get(element)
+    if parent and dependent_value is not None:
+        params["sysparm_query"] = f"{parent}={dependent_value}"
+    response = await servicenow_request(
+        context, "GET", f"/api/now/stats/{SIR_TABLE}", params=params
+    )
+    choices = []
+    for bucket in result_of(response) or []:
+        for group in bucket.get("groupby_fields") or []:
+            value = str(group.get("value") or "")
+            if value:
+                choices.append(
+                    {
+                        "label": str(group.get("display_value") or value),
+                        "value": value,
+                        "depends_on": dependent_value or "",
+                    }
+                )
+    return choices
 
 
-def match_choice(field: str, given: str, choices: list[dict[str, str]]) -> str:
+def match_choice(
+    field: str, given: str, choices: list[dict[str, str]], source: str = CONFIGURED
+) -> str:
     """Map a caller-supplied label or value to the stored value, or explain the valid options."""
     wanted = given.strip().lower()
     for choice in choices:
         if wanted in (choice["value"].lower(), choice["label"].lower()):
             return choice["value"]
     valid = ", ".join(f"{c['label']} ({c['value']})" for c in choices) or "none found"
+    hint = (
+        " These are the values existing incidents use; the instance may define others."
+        if source == OBSERVED
+        else ""
+    )
     raise RetryableToolError(
         message=f"'{given}' is not a valid {field}.",
-        developer_message=f"No active sys_choice for {SIR_TABLE}.{field} matched {given!r}.",
-        additional_prompt_content=f"Valid values for {field}: {valid}.",
+        developer_message=f"No {source} choice for {SIR_TABLE}.{field} matched {given!r}.",
+        additional_prompt_content=f"Valid values for {field}: {valid}.{hint}",
     )
 
 
