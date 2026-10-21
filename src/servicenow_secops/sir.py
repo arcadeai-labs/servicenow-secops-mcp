@@ -1,4 +1,4 @@
-"""Lookups shared by the SIR tools: incident resolution, choice lists, and tags."""
+"""Lookups shared by the SIR tools: incident resolution, choice lists, and applied tags."""
 
 import re
 from typing import Any
@@ -13,11 +13,11 @@ from servicenow_secops.constants import (
     APPLIED_TAG_TABLE,
     APPLIED_TAG_TAG_FIELD,
     CHOICE_FALLBACK_TABLES,
-    SECURITY_TAG_TABLE,
     SIR_TABLE,
 )
 
 _SYS_ID = re.compile(r"^[0-9a-f]{32}$")
+_RANK_PREFIX = re.compile(r"^\d+\s*-\s*")
 
 
 async def resolve_sir_sys_id(context: Context, incident: str) -> str:
@@ -126,7 +126,9 @@ def match_choice(
     """Map a caller-supplied label or value to the stored value, or explain the valid options."""
     wanted = given.strip().lower()
     for choice in choices:
-        if wanted in (choice["value"].lower(), choice["label"].lower()):
+        label = choice["label"].lower()
+        # Some SIR labels carry a rank prefix ("2 - High"); accept the bare word too.
+        if wanted in (choice["value"].lower(), label, _RANK_PREFIX.sub("", label)):
             return choice["value"]
     valid = ", ".join(f"{c['label']} ({c['value']})" for c in choices) or "none found"
     hint = (
@@ -139,16 +141,6 @@ def match_choice(
         developer_message=f"No {source} choice for {SIR_TABLE}.{field} matched {given!r}.",
         additional_prompt_content=f"Valid values for {field}: {valid}.{hint}",
     )
-
-
-async def list_security_tags(context: Context) -> list[dict[str, str]]:
-    response = await servicenow_request(
-        context,
-        "GET",
-        f"/api/now/table/{SECURITY_TAG_TABLE}",
-        params={"sysparm_fields": "sys_id,name", "sysparm_limit": 1000},
-    )
-    return [{"sys_id": row["sys_id"], "name": row["name"]} for row in result_of(response) or []]
 
 
 async def tags_on_incident(context: Context, sir_sys_id: str) -> list[dict[str, Any]]:

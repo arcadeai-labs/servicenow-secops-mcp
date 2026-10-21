@@ -40,19 +40,17 @@ UPDATABLE_CHOICE_FIELDS = {
 }
 
 # Secure notes live on sm_order as a single encrypted field (glide_encrypted), not
-# a journal: a write replaces the whole value. Reading and writing it requires the
-# encryption context SIR assigns to its secure-notes role, so the service account
-# needs that role or the field reads back empty.
+# a journal: a write replaces the whole value, so updates read it and append. The
+# sn_si.analyst role could read and write it in testing; an account that can't read
+# it would see it empty and overwrite earlier notes.
 SECURE_NOTES_FIELD = "secure_notes"
 
-# Security tag definitions, and the table that applies a tag to any record. An
-# applied tag points at its record with a document_id pair (record_table +
-# record_id). sn_si_incident also has a security_tags list field, but the demo
-# data populates the applied-tag table, so that is the one read and written here.
-SECURITY_TAG_TABLE = "sn_sec_cmn_security_tag"
+# Security tags applied to an incident, read by GetSecurityIncident. An applied tag
+# points at its record with a document_id pair (record_table + record_id). SIR only
+# lets server-side code create these rows, and offers no out-of-the-box API for it,
+# so this server reads tags but doesn't apply them. The incident's security_tags
+# list field is filled in from these rows, not the other way round.
 APPLIED_TAG_TABLE = "sn_sec_cmn_applied_security_tag"
 APPLIED_TAG_RECORD_TABLE_FIELD = "record_table"
 APPLIED_TAG_RECORD_ID_FIELD = "record_id"
 APPLIED_TAG_TAG_FIELD = "security_tag"
-
-SECURITY_TAG_PSEUDO_FIELD = "security_tag"

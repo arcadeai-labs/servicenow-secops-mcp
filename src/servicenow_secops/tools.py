@@ -15,12 +15,7 @@ from arcade_mcp_server.metadata import (
 from servicenow_secops.auth import SERVICE_ACCOUNT_SECRETS
 from servicenow_secops.client import result_of, servicenow_request
 from servicenow_secops.constants import (
-    APPLIED_TAG_RECORD_ID_FIELD,
-    APPLIED_TAG_RECORD_TABLE_FIELD,
-    APPLIED_TAG_TABLE,
-    APPLIED_TAG_TAG_FIELD,
     SECURE_NOTES_FIELD,
-    SECURITY_TAG_PSEUDO_FIELD,
     SIR_FIELDS,
     SIR_TABLE,
     UPDATABLE_CHOICE_FIELDS,
@@ -28,7 +23,6 @@ from servicenow_secops.constants import (
 from servicenow_secops.sir import (
     OBSERVED,
     list_choices,
-    list_security_tags,
     match_choice,
     resolve_sir_sys_id,
     tags_on_incident,
@@ -95,7 +89,7 @@ async def list_security_incident_field_choices(
     field: Annotated[
         str,
         "The field to list valid values for: 'state', 'category', 'subcategory', "
-        "'business_impact', or 'security_tag'",
+        "or 'business_impact'",
     ],
     category: Annotated[
         str | None,
@@ -104,18 +98,14 @@ async def list_security_incident_field_choices(
 ) -> Annotated[dict, "The valid values for the field on this ServiceNow instance"]:
     """List the valid values for a security incident field, as configured on this instance.
 
-    Use this before UpdateSecurityIncident or AddSecurityTag when unsure which values exist.
+    Use this before UpdateSecurityIncident when unsure which values exist.
     """
     field = field.strip().lower()
-    if field == SECURITY_TAG_PSEUDO_FIELD:
-        tags = await list_security_tags(context)
-        return {"field": field, "choices": [{"label": t["name"], "value": t["name"]} for t in tags]}
-
     if field not in UPDATABLE_CHOICE_FIELDS:
         raise ToolExecutionError(
             message=(
                 f"'{field}' is not a supported field. Use one of: "
-                f"{', '.join([*UPDATABLE_CHOICE_FIELDS, SECURITY_TAG_PSEUDO_FIELD])}."
+                f"{', '.join(UPDATABLE_CHOICE_FIELDS)}."
             ),
         )
 
@@ -219,67 +209,4 @@ async def update_security_incident(
         "number": (_field(record, "number") or {}).get("value"),
         "updated": {name: _field(record, name) for name in payload if name != SECURE_NOTES_FIELD},
         "secure_note_added": bool(secure_note),
-    }
-
-
-@tool(
-    requires_secrets=SERVICE_ACCOUNT_SECRETS,
-    metadata=ToolMetadata(
-        classification=_CLASSIFICATION,
-        behavior=Behavior(
-            operations=[Operation.CREATE],
-            read_only=False,
-            destructive=False,
-            idempotent=True,
-            open_world=True,
-        ),
-    ),
-)
-async def add_security_tag(
-    context: Context,
-    incident: _INCIDENT_ARG,
-    tag: Annotated[str, "Name of the security tag to apply (e.g. 'Phishing')"],
-) -> Annotated[dict, "The tags on the incident after the change"]:
-    """Apply a security tag to a security incident. Does nothing if the tag is already applied."""
-    sys_id = await resolve_sir_sys_id(context, incident)
-
-    tags = await list_security_tags(context)
-    name = match_choice(
-        SECURITY_TAG_PSEUDO_FIELD, tag, [{"label": t["name"], "value": t["name"]} for t in tags]
-    )
-    wanted = next(t for t in tags if t["name"] == name)
-
-    current = await tags_on_incident(context, sys_id)
-    if any(t["tag_sys_id"] == wanted["sys_id"] for t in current):
-        return {"sys_id": sys_id, "added": False, "security_tags": current}
-
-    # SIR's applied-tag table only accepts inserts from server-side code (its create
-    # ACL is "nobody"); the UI applies tags through sn_sec_cmn.SecurityTagUtil. On
-    # such instances this insert is refused, and no role changes that.
-    try:
-        await servicenow_request(
-            context,
-            "POST",
-            f"/api/now/table/{APPLIED_TAG_TABLE}",
-            json_body={
-                APPLIED_TAG_RECORD_TABLE_FIELD: SIR_TABLE,
-                APPLIED_TAG_RECORD_ID_FIELD: sys_id,
-                APPLIED_TAG_TAG_FIELD: wanted["sys_id"],
-            },
-        )
-    except ToolExecutionError as error:
-        raise ToolExecutionError(
-            message=(
-                "This ServiceNow instance doesn't allow security tags to be applied through "
-                "its REST API, so the tag was not added. Add it in ServiceNow instead."
-            ),
-            developer_message=(
-                f"Insert into {APPLIED_TAG_TABLE} was refused ({error.message}). SIR restricts "
-                "that table to server-side code; see the README's Known gaps."
-            ),
-        ) from error
-    return {
-        "sys_id": sys_id,
-        "added": True,
-        "security_tags": await tags_on_incident(context, sys_id),
     }

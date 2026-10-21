@@ -1,12 +1,12 @@
 # ServiceNow SecOps MCP Server
 
-An [Arcade](https://docs.arcade.dev/en/home) MCP server for **ServiceNow Security Incident Response (SIR)**. It lets an AI agent finish working a security incident: read it, record its classification and verdict, tag it, and move it to the next state.
+An [Arcade](https://docs.arcade.dev/en/home) MCP server for **ServiceNow Security Incident Response (SIR)**. It lets an AI agent finish working a security incident: read it, record its classification and verdict, add secure notes, and move it to the next state.
 
 It runs as a **dedicated ServiceNow service account**, not as whichever person signed in.
 
 > This is an [Arcade Labs](https://github.com/arcadeai-labs) project: shared as-is, without support or an SLA.
 
-> **Status: early.** Run end to end as a service account against Security Incident Response 14.4.4 on a Brazil-release instance. `GetSecurityIncident`, `ListSecurityIncidentFieldChoices` and `UpdateSecurityIncident` work; `AddSecurityTag` does not yet. See [Known gaps](#known-gaps).
+> **Status: early.** Run end to end as a service account against Security Incident Response 14.4.4 on a Brazil-release instance. All three tools work. Applying security tags isn't supported; see [Known gaps](#known-gaps).
 
 ## Contents
 
@@ -25,9 +25,8 @@ It runs as a **dedicated ServiceNow service account**, not as whichever person s
 | Tool | What it does |
 |---|---|
 | `GetSecurityIncident` | Reads a security incident by number (`SIR0010001`) or sys_id. Returns each field with both its stored value and display label, plus the incident's security tags and secure notes. |
-| `ListSecurityIncidentFieldChoices` | Lists the valid values for `state`, `category`, `subcategory` (optionally filtered by category), `business_impact`, or `security_tag`, as configured on your instance. |
+| `ListSecurityIncidentFieldChoices` | Lists the valid values for `state`, `category`, `subcategory` (optionally filtered by category) or `business_impact`, as configured on your instance. |
 | `UpdateSecurityIncident` | Sets state, category, subcategory and business impact, and optionally adds a secure note. Accepts a display label or a stored value, and checks it against the instance's choice list before writing. |
-| `AddSecurityTag` | Applies a security tag to an incident by name. Does nothing if the tag is already applied, so it is safe to retry. |
 
 When a value is not valid, the tools return a retryable error that lists the valid options, so the agent can correct itself without a separate lookup.
 
@@ -124,12 +123,11 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 | Business impact | `business_criticality` | Integer: 1 Critical, 2 High, 3 Non-critical |
 | Organization | `company` | Reference to `core_company`, inherited from `task` |
 | Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends. Readable and writable with `sn_si.analyst` |
-| Security tags | `sn_sec_cmn_security_tag` | Tag definitions |
-| Tags applied to an incident | `sn_sec_cmn_applied_security_tag` | Points at the incident with `record_table` and `record_id`, and at the tag with `security_tag` |
+| Tags applied to an incident | `sn_sec_cmn_applied_security_tag` | Read-only here. Points at the incident with `record_table` and `record_id`, and at the tag with `security_tag` |
 
 ### Known gaps
 
-- **`AddSecurityTag` doesn't work through the REST API.** SIR only lets server-side code insert into `sn_sec_cmn_applied_security_tag` (its create ACL is `nobody`); the ServiceNow UI applies tags through `sn_sec_cmn.SecurityTagUtil`. The incident's `security_tags` field is filled in from the applied tags, not the other way round, so writing it doesn't apply a tag either. The tool now says so plainly instead of failing with an access error. Applying tags will need a small scripted REST API on the instance.
+- **Applying security tags isn't supported.** `GetSecurityIncident` reads an incident's tags, but nothing here applies them. SIR only lets server-side code create applied tags (the table's create ACL is `nobody`), the incident's `security_tags` field is filled in from those rows rather than the other way round, and ServiceNow ships no out-of-the-box API for it. This server only uses out-of-the-box APIs, so it doesn't add a custom one. To tag incidents automatically, use SIR's Security Tag Rules on the instance.
 - **Choice lists may be the values in use, not the full list.** Reading `sys_choice` needs roles such as `personalize_choices`, which can also edit choice lists, so a least-privilege service account won't have them. The tools then fall back to the values existing incidents hold, and say so. On a fresh instance that can miss valid values: in testing, states with no incidents (Draft, Cancelled) weren't offered.
 - **Organization can't be set yet**, because it is a reference field.
 - **No automated tests or [evals](https://docs.arcade.dev/en/build/create-tools/evaluate-tools) yet.**
@@ -139,8 +137,8 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 ```
 src/servicenow_secops/
 ├── server.py      # MCPApp entry point; registers the tools
-├── tools.py       # The four tools
-├── sir.py         # Incident lookup, choice lists, and tag helpers
+├── tools.py       # The three tools
+├── sir.py         # Incident lookup, choice lists, and applied-tag reads
 ├── client.py      # ServiceNow REST calls and error mapping
 ├── auth.py        # Client-credentials token minting and caching
 └── constants.py   # Table and field names (see "SIR schema")
