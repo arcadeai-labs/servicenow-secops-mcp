@@ -119,7 +119,7 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 | What | Where | Notes |
 |---|---|---|
 | Security incidents | `sn_si_incident` | Extends `sm_order`, which extends `task` |
-| State, category, subcategory, business impact | Choice lists on `sn_si_incident` | Subcategories depend on the category's stored value. States include Analysis (16), Contain (18), Eradicate (19) and Recover (20) |
+| State, category, subcategory, business impact | Choice lists on `sn_si_incident`, read through the UI Meta API | Subcategories depend on the category's stored value. States include Analysis (16), Contain (18), Eradicate (19) and Recover (20) |
 | Business impact | `business_criticality` | Integer: 1 Critical, 2 High, 3 Non-critical |
 | Organization | `company` | Reference to `core_company`, inherited from `task` |
 | Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends. Readable and writable with `sn_si.analyst` |
@@ -128,7 +128,7 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 ### Known gaps
 
 - **Applying security tags isn't supported.** `GetSecurityIncident` reads an incident's tags, but nothing here applies them. SIR only lets server-side code create applied tags (the table's create ACL is `nobody`), the incident's `security_tags` field is filled in from those rows rather than the other way round, and ServiceNow ships no out-of-the-box API for it. This server only uses out-of-the-box APIs, so it doesn't add a custom one. To tag incidents automatically, use SIR's Security Tag Rules on the instance.
-- **Choice lists may be the values in use, not the full list.** Reading `sys_choice` needs roles such as `personalize_choices`, which can also edit choice lists, so a least-privilege service account won't have them. The tools then fall back to the values existing incidents hold, and say so. On a fresh instance that can miss valid values: in testing, states with no incidents (Draft, Cancelled) weren't offered.
+- **Choice lists come from the UI Meta API.** Tools read the instance's configured choices from `/api/now/ui/meta/sn_si_incident`, which any account that can read security incidents can call. If that's unavailable they try `sys_choice` (which needs roles such as `personalize_choices`), then fall back to the values existing incidents hold, which can miss valid ones; the tool output says when that happens.
 - **Organization can't be set yet**, because it is a reference field.
 - **No automated tests or [evals](https://docs.arcade.dev/en/build/create-tools/evaluate-tools) yet.**
 

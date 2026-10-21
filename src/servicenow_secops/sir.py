@@ -45,10 +45,10 @@ async def resolve_sir_sys_id(context: Context, incident: str) -> str:
     return rows[0]["sys_id"]
 
 
-# Where a choice list came from. "configured" is the instance's full choice list
-# from sys_choice. "observed" is only the values existing incidents hold, used when
-# the account can't read sys_choice (it needs roles such as personalize_choices,
-# which can also edit choice lists, so a least-privilege account won't have them).
+# Where a choice list came from. "configured" is the instance's full choice list,
+# read from the UI Meta API (which any user who can read the table can call) or,
+# failing that, sys_choice (which needs roles such as personalize_choices). "observed"
+# is a last resort: only the values existing incidents hold, which can miss valid ones.
 CONFIGURED = "configured"
 OBSERVED = "observed"
 
@@ -60,6 +60,9 @@ async def list_choices(
     context: Context, element: str, dependent_value: str | None = None
 ) -> tuple[list[dict[str, str]], str]:
     """Choices for a SIR field, and whether they're the configured list or observed values."""
+    rows = await _ui_meta_choices(context, element, dependent_value)
+    if rows is not None:
+        return rows, CONFIGURED
     try:
         for table in (SIR_TABLE, *CHOICE_FALLBACK_TABLES):
             query = f"name={table}^element={element}^inactive=false"
@@ -75,19 +78,54 @@ async def list_choices(
                     "sysparm_limit": 500,
                 },
             )
-            rows = result_of(response) or []
-            if rows:
+            found = result_of(response) or []
+            if found:
                 return [
                     {
                         "label": row["label"],
                         "value": row["value"],
                         "depends_on": row.get("dependent_value") or "",
                     }
-                    for row in rows
+                    for row in found
                 ], CONFIGURED
     except ToolExecutionError:
         pass  # sys_choice isn't readable by this account; use observed values
     return await _observed_choices(context, element, dependent_value), OBSERVED
+
+
+async def _ui_meta_choices(
+    context: Context, element: str, dependent_value: str | None
+) -> list[dict[str, str]] | None:
+    """The field's configured choices from the UI Meta API, or None if it isn't usable.
+
+    The API returns every choice for a dependent field; each carries the parent
+    values it belongs to, so subcategories are filtered by category here.
+    """
+    try:
+        response = await servicenow_request(
+            context, "GET", f"/api/now/ui/meta/{SIR_TABLE}", not_found_ok=True
+        )
+    except ToolExecutionError:
+        return None
+    if response.status_code != 200:
+        return None
+    column = ((result_of(response) or {}).get("columns") or {}).get(element) or {}
+    rows = []
+    for choice in column.get("choices") or []:
+        value = str(choice.get("value") or "")
+        if not value or choice.get("missing"):
+            continue  # "-- None --" and choices no longer defined
+        parents = [p for p in (choice.get("parameters") or {}).get("dependent_values") or [] if p]
+        if dependent_value is not None and parents and dependent_value not in parents:
+            continue
+        rows.append(
+            {
+                "label": str(choice.get("label") or value),
+                "value": value,
+                "depends_on": ",".join(parents),
+            }
+        )
+    return rows or None
 
 
 async def _observed_choices(
