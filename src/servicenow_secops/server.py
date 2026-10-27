@@ -12,7 +12,7 @@ from arcade_mcp_server import MCPApp
 
 import servicenow_secops
 
-app = MCPApp(name="ServiceNowSecOps", version="0.1.0", log_level="DEBUG")
+app = MCPApp(name="ServiceNowSecOps", version="0.2.0", log_level="DEBUG")
 
 app.add_tools_from_module(servicenow_secops)
 
