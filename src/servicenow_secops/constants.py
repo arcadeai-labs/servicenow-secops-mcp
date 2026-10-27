@@ -39,6 +39,33 @@ UPDATABLE_CHOICE_FIELDS = {
     "business_impact": "business_criticality",
 }
 
+# Choice fields SearchSecurityIncidents and ListSecurityIncidentFieldChoices accept:
+# the updatable ones, plus priority (calculated from impact and urgency, so not set here).
+CHOICE_FIELDS = {**UPDATABLE_CHOICE_FIELDS, "priority": "priority"}
+
+# Assignment is a pair of references inherited from task. The tools accept a group's
+# name or sys_id, and a user's user_name, email, full name or sys_id, and resolve them
+# through the Table API (sn_si.analyst can read sys_user, sys_user_group and
+# sys_user_grmember in testing).
+ASSIGNED_TO_FIELD = "assigned_to"
+ASSIGNMENT_GROUP_FIELD = "assignment_group"
+
+# Fields returned for each match by SearchSecurityIncidents.
+SEARCH_FIELDS = [
+    "sys_id",
+    "number",
+    "short_description",
+    "state",
+    "priority",
+    "category",
+    "subcategory",
+    "business_criticality",
+    ASSIGNMENT_GROUP_FIELD,
+    ASSIGNED_TO_FIELD,
+    "opened_at",
+    "sys_updated_on",
+]
+
 # Secure notes live on sm_order as a single encrypted field (glide_encrypted), not
 # a journal: a write replaces the whole value, so updates read it and append. The
 # sn_si.analyst role could read and write it in testing; an account that can't read

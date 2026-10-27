@@ -203,3 +203,85 @@ async def tags_on_incident(context: Context, sir_sys_id: str) -> list[dict[str, 
         }
         for row in result_of(response) or []
     ]
+
+
+def encode_query_value(value: str) -> str:
+    """Escape a value for a ServiceNow encoded query, where '^' separates conditions."""
+    return value.replace("^", "^^")
+
+
+async def _lookup(
+    context: Context, table: str, queries: list[str], fields: str
+) -> list[dict[str, Any]]:
+    """Rows from the first query that matches anything, tried in order."""
+    for query in queries:
+        response = await servicenow_request(
+            context,
+            "GET",
+            f"/api/now/table/{table}",
+            params={"sysparm_query": query, "sysparm_fields": fields, "sysparm_limit": 10},
+        )
+        rows = result_of(response) or []
+        if rows:
+            return rows
+    return []
+
+
+async def resolve_group(context: Context, group: str) -> dict[str, str]:
+    """Accept an assignment group's name or sys_id; return its sys_id and name."""
+    given = group.strip()
+    value = encode_query_value(given)
+    queries = [f"sys_id={given.lower()}"] if _SYS_ID.match(given.lower()) else []
+    queries += [f"active=true^name={value}", f"active=true^nameLIKE{value}"]
+    rows = await _lookup(context, "sys_user_group", queries, "sys_id,name")
+    return _single("assignment group", given, rows, lambda r: r["name"])
+
+
+async def resolve_user(context: Context, user: str) -> dict[str, str]:
+    """Accept a user's user_name, email, full name or sys_id; return its sys_id and name."""
+    given = user.strip()
+    value = encode_query_value(given)
+    queries = [f"sys_id={given.lower()}"] if _SYS_ID.match(given.lower()) else []
+    queries += [
+        f"active=true^user_name={value}",
+        f"active=true^email={value}",
+        f"active=true^name={value}",
+        f"active=true^nameLIKE{value}",
+    ]
+    rows = await _lookup(context, "sys_user", queries, "sys_id,name,user_name")
+    return _single("user", given, rows, lambda r: f"{r['name']} ({r['user_name']})")
+
+
+def _single(kind: str, given: str, rows: list[dict[str, Any]], describe: Any) -> dict[str, str]:
+    if len(rows) == 1:
+        return {"sys_id": rows[0]["sys_id"], "name": rows[0]["name"]}
+    if not rows:
+        raise RetryableToolError(
+            message=f"No active {kind} matches '{given}'.",
+            developer_message=f"No active {kind} matched {given!r}.",
+            additional_prompt_content=f"Check the spelling, or pass the {kind}'s exact name.",
+        )
+    options = "; ".join(describe(r) for r in rows)
+    raise RetryableToolError(
+        message=f"'{given}' matches more than one {kind}.",
+        developer_message=f"{len(rows)} {kind} rows matched {given!r}.",
+        additional_prompt_content=f"Pass one of these exactly: {options}.",
+    )
+
+
+async def is_group_member(context: Context, user_sys_id: str, group_sys_id: str) -> bool | None:
+    """Whether the user belongs to the group, or None if memberships can't be read."""
+    try:
+        response = await servicenow_request(
+            context,
+            "GET",
+            "/api/now/table/sys_user_grmember",
+            params={
+                "sysparm_query": f"user={user_sys_id}^group={group_sys_id}",
+                "sysparm_fields": "sys_id",
+                "sysparm_limit": 1,
+            },
+        )
+    except ToolExecutionError:
+        return None
+    return bool(result_of(response))

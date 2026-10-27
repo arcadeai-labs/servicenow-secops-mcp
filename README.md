@@ -1,12 +1,12 @@
 # ServiceNow SecOps MCP Server
 
-An [Arcade](https://docs.arcade.dev/en/home) MCP server for **ServiceNow Security Incident Response (SIR)**. It lets an AI agent finish working a security incident: read it, record its classification and verdict, add secure notes, and move it to the next state.
+An [Arcade](https://docs.arcade.dev/en/home) MCP server for **ServiceNow Security Incident Response (SIR)**. It lets an AI agent find security incidents and work them: read one, assign it, record its classification and verdict, add secure notes, and move it to the next state.
 
 It runs as a **dedicated ServiceNow service account**, not as whichever person signed in.
 
 > This is an [Arcade Labs](https://github.com/arcadeai-labs) project: shared as-is, without support or an SLA.
 
-> **Status: early.** Run end to end as a service account against Security Incident Response 14.4.4 on a Brazil-release instance. All three tools work. Applying security tags isn't supported; see [Known gaps](#known-gaps).
+> **Status: early.** Run end to end as a service account against Security Incident Response 14.4.4 on a Brazil-release instance. All four tools work. Applying security tags isn't supported; see [Known gaps](#known-gaps).
 
 ## Contents
 
@@ -25,14 +25,15 @@ It runs as a **dedicated ServiceNow service account**, not as whichever person s
 | Tool | What it does |
 |---|---|
 | `GetSecurityIncident` | Reads a security incident by number (`SIR0010001`) or sys_id. Returns each field with both its stored value and display label, plus the incident's security tags and secure notes. |
-| `ListSecurityIncidentFieldChoices` | Lists the valid values for `state`, `category`, `subcategory` (optionally filtered by category) or `business_impact`, as configured on your instance. |
-| `UpdateSecurityIncident` | Sets state, category, subcategory and business impact, and optionally adds a secure note. Accepts a display label or a stored value, and checks it against the instance's choice list before writing. |
+| `SearchSecurityIncidents` | Finds security incidents by text, state, category, subcategory, business impact, priority, assignment group, assignee (or unassigned), and opened date. Returns open incidents by default, most recently updated first, with paging. |
+| `ListSecurityIncidentFieldChoices` | Lists the valid values for `state`, `category`, `subcategory` (optionally filtered by category), `business_impact` or `priority`, as configured on your instance. |
+| `UpdateSecurityIncident` | Sets state, category, subcategory, business impact, assignment group and assignee, and optionally adds a secure note. Accepts a display label or a stored value, and checks it against the instance's choice list before writing. An assignee must be a member of the assignment group. |
 
-When a value is not valid, the tools return a retryable error that lists the valid options, so the agent can correct itself without a separate lookup.
+Groups are accepted by name, and users by user name, email or full name. When a value is not valid or a name matches more than one record, the tools return a retryable error that lists the valid options, so the agent can correct itself without a separate lookup.
 
 ### Use it alongside the general ServiceNow toolkit
 
-This server only covers SIR-specific work. General ServiceNow work, such as work notes and assignment, is handled by Arcade's [ServiceNow toolkit](https://docs.arcade.dev/en/resources/integrations/customer-support/servicenow). To give an agent both, add both servers' tools to one [MCP Gateway](https://docs.arcade.dev/en/operate/governance/mcp-gateways/create-via-dashboard).
+This server only covers SIR-specific work. General ServiceNow work, such as work notes, is handled by Arcade's [ServiceNow toolkit](https://docs.arcade.dev/en/resources/integrations/customer-support/servicenow). To give an agent both, add both servers' tools to one [MCP Gateway](https://docs.arcade.dev/en/operate/governance/mcp-gateways/create-via-dashboard).
 
 ## How authentication works
 
@@ -52,7 +53,7 @@ The values are never in the code. Tools declare the secret *names* they need wit
 
 You need a ServiceNow admin for these steps. The exact menus depend on your ServiceNow release.
 
-1. **Create the service account.** Create a ServiceNow user for the agent, marked web-service access only, with the `sn_si.analyst` role. That role was enough to read and update security incidents and to read and append secure notes in testing.
+1. **Create the service account.** Create a ServiceNow user for the agent, marked web-service access only, with the `sn_si.analyst` role. That role was enough in testing to read, search, assign and update security incidents, to read and append secure notes, and to look up users, groups and group membership.
 2. **Enable the client-credentials grant.** Set the system property `glide.oauth.inbound.client.credential.grant_type.enabled` to `true`.
 3. **Create an OAuth client for it.** In Machine Identity Console (Zurich and later) or Application Registry (earlier releases), create an OAuth client for an integration service, with **Client Credentials** as its default grant type and the service account as its **OAuth Application User**.
 4. **Copy the client ID and client secret.** You will store them in Arcade, not in this repository.
@@ -121,6 +122,7 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 | Security incidents | `sn_si_incident` | Extends `sm_order`, which extends `task` |
 | State, category, subcategory, business impact | Choice lists on `sn_si_incident`, read through the UI Meta API | Subcategories depend on the category's stored value. States include Analysis (16), Contain (18), Eradicate (19) and Recover (20) |
 | Business impact | `business_criticality` | Integer: 1 Critical, 2 High, 3 Non-critical |
+| Assignment | `assignment_group`, `assigned_to` | References to `sys_user_group` and `sys_user`, inherited from `task`. The tools check `sys_user_grmember` so an assignee is always in the group, as ServiceNow's form does; the Table API doesn't enforce it |
 | Organization | `company` | Reference to `core_company`, inherited from `task` |
 | Secure notes | `secure_notes` on `sm_order` | A single encrypted field, not a journal: writing replaces the whole value, so `UpdateSecurityIncident` reads the current notes and appends. Readable and writable with `sn_si.analyst` |
 | Tags applied to an incident | `sn_sec_cmn_applied_security_tag` | Read-only here. Points at the incident with `record_table` and `record_id`, and at the tag with `security_tag` |
@@ -137,8 +139,8 @@ These names are in [`constants.py`](src/servicenow_secops/constants.py). They we
 ```
 src/servicenow_secops/
 ├── server.py      # MCPApp entry point; registers the tools
-├── tools.py       # The three tools
-├── sir.py         # Incident lookup, choice lists, and applied-tag reads
+├── tools.py       # The four tools
+├── sir.py         # Incident, user and group lookups, choice lists, and applied-tag reads
 ├── client.py      # ServiceNow REST calls and error mapping
 ├── auth.py        # Client-credentials token minting and caching
 └── constants.py   # Table and field names (see "SIR schema")
